@@ -87,6 +87,26 @@ describe "Core::Text::Formatted::LineWrap#wrap_line" do
     expect(string).to eq("hello")
   end
 
+  it "should not break on NBSP" do
+    array = [{ text: "hello#{Prawn::Text::NBSP}world" }]
+    @arranger.format_array = array
+    string = @line_wrap.wrap_line(:arranger => @arranger,
+                                  :width => @one_word_width,
+                                  :document => @pdf)
+    expect(string).to eq("hello#{Prawn::Text::NBSP}wor")
+  end
+
+  it "should not break on NBSP in a Win-1252 encoded string" do
+    array = [{
+      text: "hello#{Prawn::Text::NBSP}world".encode(Encoding::Windows_1252)
+    }]
+    @arranger.format_array = array
+    string = @line_wrap.wrap_line(:arranger => @arranger,
+                                  :width => @one_word_width,
+                                  :document => @pdf)
+    expect(string).to eq("hello#{Prawn::Text::NBSP}wor")
+  end
+
   it "should break on hyphens" do
     array = [{ :text => "hello-world" }]
     @arranger.format_array = array
@@ -120,9 +140,7 @@ describe "Core::Text::Formatted::LineWrap#wrap_line" do
     string = @line_wrap.wrap_line(:arranger => @arranger,
                                   :width => @one_word_width,
                                   :document => @pdf)
-    expected = @pdf.font.normalize_encoding("hello#{Prawn::Text::SHY}")
-    expected.force_encoding(Encoding::UTF_8)
-    expect(string).to eq(expected)
+    expect(string).to eq("hello#{Prawn::Text::SHY}")
 
     @pdf.font("#{Prawn::DATADIR}/fonts/DejaVuSans.ttf")
     @line_wrap = Prawn::Text::Formatted::LineWrap.new
@@ -227,9 +245,7 @@ describe "Core::Text::Formatted::LineWrap#wrap_line" do
     string = @line_wrap.wrap_line(:arranger => @arranger,
                                   :width => @one_word_width,
                                   :document => @pdf)
-    expected = @pdf.font.normalize_encoding("hello#{Prawn::Text::SHY}")
-    expected.force_encoding(Encoding::UTF_8)
-    expect(string).to eq(expected)
+    expect(string).to eq("hello#{Prawn::Text::SHY}")
 
     @pdf.font("#{Prawn::DATADIR}/fonts/DejaVuSans.ttf")
     @line_wrap = Prawn::Text::Formatted::LineWrap.new
@@ -252,6 +268,7 @@ describe "Core::Text::Formatted::LineWrap#wrap_line" do
   end
 
   it "should process UTF-8 chars", :unresolved, :issue => 693 do
+    pending
     array = [{ :text => "Ｔｅｓｔ" }]
     @arranger.format_array = array
 
@@ -319,7 +336,7 @@ describe "Core::Text::Formatted::LineWrap" do
   end
   it "should tokenize a string using the scan_pattern" do
     tokens = @line_wrap.tokenize("one two three")
-    expect(tokens.length).to eq(6)
+    expect(tokens.length).to eq(5)
   end
 end
 
