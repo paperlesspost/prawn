@@ -23,6 +23,7 @@ module Prawn
       attr_reader :width, :height, :bits
       attr_reader :color_type, :compression_method, :filter_method
       attr_reader :interlace_method, :alpha_channel
+      attr_reader :icc_profile_info
       attr_accessor :scaled_width, :scaled_height
 
       def self.can_render?(image_blob)
@@ -78,6 +79,18 @@ module Prawn
               # True colour with proper alpha channel.
               @transparency[:rgb] = data.read(chunk_size).unpack("nnn")
             end
+          when 'iCCP'
+            # ICC Profile
+            # null terminated profile name, compression type byte (should be 0), and compressed profile
+            iccp_chunk = data.read(chunk_size)
+            icc_profile_values = iccp_chunk.unpack("Z*Ca*")
+            if icc_profile_values.length == 3
+              profile_info = {}
+              [:name, :compression_method, :compressed_profile].each_with_index do |k, i|
+                profile_info[k] = icc_profile_values[i]
+              end
+              @icc_profile_info = profile_info
+            end
           when 'IEND'
             # we've got everything we need, exit the loop
             break
@@ -123,6 +136,10 @@ module Prawn
         false
       end
 
+      def has_icc_profile?
+        !!icc_profile_info
+      end
+
       # Build a PDF object representing this image in +document+, and return
       # a Reference to it.
       #
@@ -146,6 +163,8 @@ module Prawn
         # which the PDF spec doesn't like, so split it out.
         split_alpha_channel!
 
+        color = :DeviceRGB
+
         case colors
         when 1
           color = :DeviceGray
@@ -154,7 +173,7 @@ module Prawn
         else
           fail Errors::UnsupportedImageType,
                "PNG uses an unsupported number of colors (#{png.colors})"
-        end
+        end if palette.empty?
 
         # build the image dict
         obj = document.ref!(
@@ -177,6 +196,19 @@ module Prawn
           }
         }
 
+        if has_icc_profile?
+          if icc_profile_info[:compression_method] != 0
+            fail Errors::UnsupportedImageType,
+                 'PNG uses an unsupported ICC profile compression method'
+          end
+          icc_base_obj = document.ref!({})
+          icc_base_obj.data[:N] = colors
+          icc_base_obj.data[:Alternate] = color
+          icc_base_obj.data[:Filter] = :FlateDecode
+          icc_base_obj.stream << icc_profile_info[:compressed_profile]
+          color = [:ICCBased, icc_base_obj]
+        end
+
         # sort out the colours of the image
         if palette.empty?
           obj.data[:ColorSpace] = color
@@ -187,7 +219,7 @@ module Prawn
 
           # build the color space array for the image
           obj.data[:ColorSpace] = [:Indexed,
-                                   :DeviceRGB,
+                                   color,
                                    (palette.size / 3) - 1,
                                    palette_obj]
         end
@@ -217,12 +249,14 @@ module Prawn
         # channel mixed in with the main image data. The PNG class seperates
         # it out for us and makes it available via the alpha_channel attribute
         if alpha_channel?
+          # Indexed images always have 8-bit alpha values
+          smask_bits = color_type == 3 ? 8 : bits
           smask_obj = document.ref!(
             :Type             => :XObject,
             :Subtype          => :Image,
             :Height           => height,
             :Width            => width,
-            :BitsPerComponent => bits,
+            :BitsPerComponent => smask_bits,
             :ColorSpace       => :DeviceGray,
             :Decode           => [0, 1]
           )
@@ -232,7 +266,7 @@ module Prawn
             :FlateDecode => {
               :Predictor => 15,
               :Colors    => 1,
-              :BitsPerComponent => bits,
+              :BitsPerComponent => smask_bits,
               :Columns   => width
             }
           }
@@ -250,6 +284,8 @@ module Prawn
         elsif alpha_channel?
           # Need transparency for SMask
           1.4
+        elsif has_icc_profile?
+          1.3
         else
           1.0
         end
@@ -299,29 +335,75 @@ module Prawn
           alpha_palette[n] = @transparency[:palette][n] || 0xff
         end
 
-        scanline_length = width + 1
+        # each encoded scan line is preceded by a filter-type byte
+        # https://www.w3.org/TR/PNG/#7Filtering
+        supported_filter_types = [0, 1, 2]
+        scanline_image_bytes = ((width * bits) / 8.0).ceil # byte-alignment
+        scanline_length = scanline_image_bytes + 1
         scanlines = @img_data.bytesize / scanline_length
         pixels = width * height
+
+        # puts "#{bits} bit PNG with indexed color and transparency: #{width}x#{height} pixels"
+        # puts "#{scanlines} scan lines of #{scanline_length} bytes each"
 
         data = StringIO.new(@img_data)
         data.binmode
 
-        @alpha_channel = [0x00].pack('C') * (pixels + scanlines)
+        # the result channel is also structured as a PNG byte stream
+        # including the filter-type byte
+        alpha_bytes = pixels + scanlines
+        @alpha_channel = [0x00].pack('C') * (alpha_bytes)
+        bytes_written = 0
+        bitmask = (2 ** bits) - 1 if bits < 8
         alpha = StringIO.new(@alpha_channel)
         alpha.binmode
-
+        # for filter type 2
+        last_scan_line_reconstructed_bytes = Array.new(scanline_image_bytes, 0)
         scanlines.times do |line|
           data.seek(line * scanline_length)
 
-          filter = data.getbyte
-
-          alpha.putc filter
-
-          width.times do
-            color = data.read(1).unpack('C').first
-            alpha.putc alpha_palette[color]
+          filter_type = data.getbyte
+          unless supported_filter_types.include?(filter_type)
+            fail Errors::UnsupportedImageType,
+                 "PNG uses an unsupported filter type #{filter_type}"
           end
+
+          alpha.putc filter_type
+          bytes_written += 1
+          if 1 == filter_type
+            last_reconstructed_byte = 0
+          end
+          # supprt 2 == filter_type - Up
+          scan_line_reconstructed_bytes = []
+          line_pixels_written = 0 if bits < 8
+          scanline_image_bytes.times do |byte_idx|
+            # limit pixels, in case of byte-padding
+            color_index = data.read(1).unpack('C').first
+            if 1 == filter_type # Sub
+              color_index = color_index + last_reconstructed_byte
+              last_reconstructed_byte = color_index
+            elsif 2 == filter_type # Up
+              color_index = color_index + last_scan_line_reconstructed_bytes[byte_idx]
+            end
+            scan_line_reconstructed_bytes.push(color_index)
+            if bits < 8
+              bitfield = color_index
+              8.div(bits).times do |i|
+                break if line_pixels_written >= width
+                color_index = (bitfield & bitmask)
+                alpha.putc alpha_palette[color_index]
+                bitfield = bitfield >> bits
+                line_pixels_written += 1
+                bytes_written += 1
+              end
+            else
+              alpha.putc alpha_palette[color_index]
+              bytes_written += 1
+            end
+          end
+          last_scan_line_reconstructed_bytes = scan_line_reconstructed_bytes
         end
+        puts "Expected to write #{alpha_bytes} bytes and wrote #{bytes_written} bytes" if bytes_written != alpha_bytes
       end
     end
   end

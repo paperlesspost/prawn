@@ -150,6 +150,30 @@ describe "When reading an indexed color PNG file (color type 3)" do
   end
 end
 
+describe "When reading an indexed color PNG file (color type 3) with an ICC profile" do
+  before(:each) do
+    @filename = "#{Prawn::DATADIR}/images/indexed_gray_with_icc_profile.png"
+    @img_data = File.binread(@filename)
+  end
+
+  it "should read the attributes from the header chunk correctly" do
+    png = Prawn::Images::PNG.new(@img_data)
+
+    expect(png.width).to eq(1650)
+    expect(png.height).to eq(1650)
+    expect(png.bits).to eq(2)
+    expect(png.color_type).to eq(3)
+    expect(png.compression_method).to eq(0)
+    expect(png.filter_method).to eq(0)
+    expect(png.interlace_method).to eq(0)
+  end
+
+  it "should read the ICC profile correctly" do
+    png = Prawn::Images::PNG.new(@img_data)
+    expect(png.has_icc_profile?).to eq(true)
+  end
+end
+
 describe "When reading a greyscale+alpha PNG file (color type 4)" do
   before(:each) do
     @filename = "#{Prawn::DATADIR}/images/page_white_text.png"

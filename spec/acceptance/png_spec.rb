@@ -11,6 +11,7 @@ describe "When making a pdf file with png images" do
     ["Type 2 with transparency", "#{image_dir}/arrow2.png"],
     ["Type 3", "#{image_dir}/indexed_color.png"],
     ["Type 3 with transparency", "#{image_dir}/indexed_transparency.png"],
+    ["Type 3 gray with ICC profile", "#{image_dir}/indexed_gray_with_icc_profile.png"],
     ["Type 4", "#{image_dir}/page_white_text.png"],
     ["Type 6", "#{image_dir}/dice.png"],
     ["Type 6 in 16bit", "#{image_dir}/16bit.png"]
